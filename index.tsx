@@ -666,7 +666,7 @@ const Dashboard = () => {
 
   const handleTouchEnd = () => {
     setIsDragging(false);
-    const threshold = window.innerWidth * 0.25;
+    const threshold = 30; // Apenas 30px — pequeno deslize ou toque já muda a tela
     if (Math.abs(dragOffset) > threshold) {
       if (dragOffset < 0) setCurrentView((v) => (v + 1) % 3);
       else setCurrentView((v) => (v - 1 + 3) % 3);
