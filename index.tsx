@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, Fragment } from 'react';
+import React, { useState, useEffect, useMemo, Fragment, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlertCircle,
@@ -24,6 +24,7 @@ const CONFIG = {
 };
 
 const LOGO_URL = 'https://i.postimg.cc/C14PvBhv/Ultra-Academia-transparente.png';
+const GOOGLE_SHEET_API = 'https://script.google.com/macros/s/AKfycbwow33xEPcD-y-1bkmgrLjAs7e65S9isuFw7Dw3AyQM1yG6dYC7SiPUNMpi9nRL62IU/exec';
 
 const AGENTES_CONFIG = [
   { id: "Enzo", displayName: "Enzo", fullName: "Enzo Edner", avatar: "https://i.postimg.cc/Y9V35kWP/20260118-1607-Image-Generation-remix-01kf97zv0aetss6psayfc2efzd-removebg-preview.png" },
@@ -191,7 +192,11 @@ const Dashboard = () => {
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [currentTime, setCurrentTime] = useState(new Date());
   const [currentView, setCurrentView] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(20);
+  const [npsStats, setNpsStats] = useState({ pessimo: 0, ruim: 0, regular: 0, bom: 0, otimo: 0, total: 0, nps: 0, encerrados: 0 });
+  const [carouselTimer, setCarouselTimer] = useState(20);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const touchStartX = useRef(0);
 
   const fetchJson = async (url: string) => {
     try {
@@ -546,6 +551,53 @@ const Dashboard = () => {
       const tmaSolMinutosDiaNew = countHojeSol > 0 ? totalMinutesHoje / countHojeSol : 0;
       const tmaSolDiaNew = Math.round(tmaSolMinutosDiaNew * 10) / 10;
 
+      // --- LOGICA NPS / SATISFAÇÃO ---
+      // --- FETCH GOOGLE SHEETS API (NPS FONTE ÚNICA) ---
+      let countPessimo = 0;
+      let countRuim = 0;
+      let countRegular = 0;
+      let countBom = 0;
+      let countOtimo = 0;
+
+      try {
+        const gRes = await fetchJson(GOOGLE_SHEET_API);
+        if (gRes && gRes.data && Array.isArray(gRes.data)) {
+          const currentMonth = now.getMonth();
+          const currentYear = now.getFullYear();
+          const filteredData = gRes.data.filter((item: any) => {
+            if (!item.Data) return false;
+            const itemDate = new Date(item.Data);
+            return itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear;
+          });
+          filteredData.forEach((item: any) => {
+            const nota = Number(item.Nota);
+            if (nota === 1) countPessimo++;
+            else if (nota === 2) countRuim++;
+            else if (nota === 3) countRegular++;
+            else if (nota === 4) countBom++;
+            else if (nota === 5) countOtimo++;
+          });
+          console.log(`[Google API] Total Mês Atual: ${filteredData.length}`);
+        }
+      } catch (e) {
+        console.error('Erro Google API', e);
+      }
+
+      const totalSurveys = countPessimo + countRuim + countRegular + countBom + countOtimo;
+      const promoters = countOtimo;
+      const detractors = countPessimo + countRuim + countRegular;
+      const npsScore = totalSurveys > 0 ? ((promoters - detractors) / totalSurveys) * 100 : 0;
+
+      setNpsStats({
+        pessimo: countPessimo,
+        ruim: countRuim,
+        regular: countRegular,
+        bom: countBom,
+        otimo: countOtimo,
+        total: totalSurveys,
+        nps: Math.round(npsScore),
+        encerrados: countMes
+      });
 
       setResumo(prev => ({
         ...prev,
@@ -581,37 +633,65 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
-    fetchData();
-    const rt = setInterval(fetchData, CONFIG.REFRESH_MS);
-    const ct = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => { clearInterval(rt); clearInterval(ct); };
-  }, []);
-
-  useEffect(() => {
     const timer = setInterval(() => {
-      setTimeLeft((prev) => {
+      setCarouselTimer((prev) => {
         if (prev <= 1) {
-          setCurrentView((v) => (v === 0 ? 1 : 0));
+          setCurrentView((v) => (v + 1) % 3);
           return 20;
         }
         return prev - 1;
       });
     }, 1000);
-    return () => clearInterval(timer);
+
+    fetchData();
+    const rt = setInterval(fetchData, CONFIG.REFRESH_MS);
+    const ct = setInterval(() => setCurrentTime(new Date()), 1000);
+
+    return () => {
+      clearInterval(timer);
+      clearInterval(rt);
+      clearInterval(ct);
+    };
   }, []);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setIsDragging(true);
+    touchStartX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDragging) return;
+    setDragOffset(e.touches[0].clientX - touchStartX.current);
+  };
+
+  const handleTouchEnd = () => {
+    setIsDragging(false);
+    const threshold = window.innerWidth * 0.25;
+    if (Math.abs(dragOffset) > threshold) {
+      if (dragOffset < 0) setCurrentView((v) => (v + 1) % 3);
+      else setCurrentView((v) => (v - 1 + 3) % 3);
+    }
+    setDragOffset(0);
+    setCarouselTimer(20);
+  };
 
   const sortedAgentes = useMemo(() => [...agentes].sort((a, b) => b.encerrados - a.encerrados), [agentes]);
   const diffSeconds = Math.floor((currentTime.getTime() - lastUpdate.getTime()) / 1000);
 
   return (
-    <div className="flex flex-col h-screen w-screen p-4 space-y-4 overflow-hidden bg-white text-slate-900 relative">
+    <div
+      className="flex flex-col h-screen w-screen p-4 space-y-4 overflow-hidden bg-white text-slate-900 relative touch-pan-y"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
       <header className="flex justify-between items-center shrink-0 h-20">
         <div className="flex items-center gap-6">
           <img src={LOGO_URL} alt="Ultra" className="h-16 w-auto" />
           <div className="h-12 w-px bg-slate-200" />
           <div>
             <h1 className="text-2xl font-black uppercase leading-none">
-              {currentView === 0 ? 'Visão Geral do Suporte' : 'Produtividade por Operador'}
+              {currentView === 0 ? 'Visão Geral do Suporte' : currentView === 1 ? 'Produtividade por Operador' : 'Satisfação do Cliente (NPS)'}
             </h1>
             <div className="flex items-center gap-4 mt-1.5 text-sm font-bold text-slate-400">
               <span className={isOffline ? 'text-red-500 font-black' : 'text-[#2fabab]'}>{isOffline ? 'DESCONECTADO' : 'CONECTADO AO MOVIDESK'}</span>
@@ -620,16 +700,32 @@ const Dashboard = () => {
             </div>
           </div>
         </div>
+
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-2xl border border-slate-100 shadow-sm">
-            <div className="flex flex-col items-end">
-              <span className="text-[9px] uppercase font-black tracking-widest text-slate-400">Próxima Tela</span>
-              <span className="text-xl font-black text-[#2fabab] tabular-nums leading-none">{timeLeft}s</span>
+          <div
+            onClick={() => { setCurrentView((v) => (v + 1) % 3); setCarouselTimer(20); }}
+            className="inline-flex items-center justify-between gap-4 px-5 py-3 min-w-[230px] bg-[#F5FBFF] rounded-full shadow-[0_8px_18px_rgba(0,0,0,0.08)] select-none cursor-pointer active:scale-95 transition-transform"
+            title="Clique para trocar de tela"
+          >
+            <div className="flex flex-col leading-none">
+              <span className="text-[10px] tracking-[0.12em] font-bold text-[#8AA2AD] mb-1.5 font-sans whitespace-nowrap">PRÓXIMA TELA</span>
+              <div className="text-[26px] font-black text-[#16B6BE] font-sans -mt-0.5">
+                <span className="tabular-nums">{carouselTimer}</span><span className="text-xl">s</span>
+              </div>
             </div>
-            <div className="relative size-8">
-              <svg className="size-full -rotate-90">
-                <circle cx="16" cy="16" r="13" fill="none" stroke="#e2e8f0" strokeWidth="3" />
-                <circle cx="16" cy="16" r="13" fill="none" stroke="#2fabab" strokeWidth="3" strokeDasharray="81.68" strokeDashoffset={81.68 - (timeLeft / 20) * 81.68} className="transition-all duration-1000 ease-linear" />
+            <div className="relative w-11 h-11 flex items-center justify-center shrink-0">
+              <svg viewBox="0 0 44 44" className="w-full h-full -rotate-90">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(22,182,190,0.18)" strokeWidth="5.5" />
+                <circle
+                  cx="22" cy="22" r="18"
+                  fill="none"
+                  stroke="#16B6BE"
+                  strokeWidth="5.5"
+                  strokeLinecap="round"
+                  strokeDasharray={113.097}
+                  strokeDashoffset={113.097 * (1 - carouselTimer / 20)}
+                  className="transition-all duration-1000 ease-linear"
+                />
               </svg>
             </div>
           </div>
@@ -639,31 +735,167 @@ const Dashboard = () => {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 relative">
-        <div className={`absolute inset-0 transition-transform duration-1000 ease-in-out flex flex-col space-y-6 ${currentView === 0 ? 'translate-x-0' : '-translate-x-full'}`}>
-          <div className="grid grid-cols-5 gap-4 shrink-0 h-44">
-            <KpiCard label="Pendentes" value={resumo.pendentes} icon={<AlertCircle size={40} />} color="#1e293b" />
-            <KpiCard label="Novos" value={resumo.novos} icon={<PlusCircle size={40} />} color="#2fabab" />
-            <KpiCard label="Em Atendimento" value={resumo.em_atendimento} icon={<Timer size={40} />} color="#C23C8E" />
-            <KpiCard label="Parados" value={resumo.parados} icon={<PauseCircle size={40} />} color="#f08228" />
-            <KpiCard label="Vencidos" value={resumo.vencidos.venceram} icon={<XCircle size={40} />} color="#ef4444" isUrgent={resumo.vencidos.venceram > 0} />
-          </div>
-          <div className="flex-1 min-h-0 grid grid-cols-5 gap-6">
-            <MetricCard label="Chamados no Mês" value={resumo.abertos_mes} icon={<CalendarDays size={48} />} color="#1e293b" />
-            <MetricCard label="Fora do Prazo" value={resumo.fora_prazo} icon={<History size={48} />} color="#ef4444" />
-            <MetricCard label="Abertos Hoje" value={resumo.abertos_hoje} icon={<TrendingUp size={48} />} color="#C23C8E" />
-            <div className="flex flex-col gap-6">
-              <MetricCard className="flex-1" label="TMA 1ª Resp Hoje" value={resumo.media_primeira_resposta_dia} color="#2fabab" gaugeValue={resumo.media_primeira_resposta_dia_raw} gaugeMax={60} isUrgent={resumo.media_primeira_resposta_dia_raw > 60} />
-              <MetricCard className="flex-1" label="TMA 1ª Resp Mês" value={resumo.media_primeira_resposta_mes} color="#2fabab" gaugeValue={resumo.media_primeira_resposta_mes_raw} gaugeMax={60} isUrgent={resumo.media_primeira_resposta_mes_raw > 60} />
+      {/* Container Deslizante */}
+      <div className="flex-1 min-h-0 relative overflow-hidden rounded-3xl">
+        <div
+          className="flex h-full w-full"
+          style={{
+            transform: `translateX(calc(-${currentView * 100}% + ${dragOffset}px))`,
+            transition: isDragging ? 'none' : 'transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1)'
+          }}
+        >
+          {/* VIEW 0: Visão Geral */}
+          <div className="min-w-full h-full p-1 flex flex-col space-y-6 overflow-y-auto">
+            <div className="grid grid-cols-5 gap-4 shrink-0 h-44">
+              <KpiCard label="Pendentes" value={resumo.pendentes} icon={<AlertCircle size={40} />} color="#1e293b" />
+              <KpiCard label="Novos" value={resumo.novos} icon={<PlusCircle size={40} />} color="#2fabab" />
+              <KpiCard label="Em Atendimento" value={resumo.em_atendimento} icon={<Timer size={40} />} color="#C23C8E" />
+              <KpiCard label="Parados" value={resumo.parados} icon={<PauseCircle size={40} />} color="#f08228" />
+              <KpiCard label="Vencidos" value={resumo.vencidos.venceram} icon={<XCircle size={40} />} color="#ef4444" isUrgent={resumo.vencidos.venceram > 0} />
             </div>
-            <div className="flex flex-col gap-6">
-              <MetricCard className="flex-1" label="TMA Solução Hoje" value={resumo.media_solucao_dia} color="#2fabab" gaugeValue={resumo.media_solucao_dia_raw} gaugeMax={240} isUrgent={resumo.media_solucao_dia_raw > 120} />
-              <MetricCard className="flex-1" label="TMA Solução Mês" value={resumo.media_solucao_mes} color="#2fabab" gaugeValue={resumo.media_solucao_mes_raw} gaugeMax={240} isUrgent={resumo.media_solucao_mes_raw > 120} />
+            <div className="flex-1 min-h-0 grid grid-cols-5 gap-6">
+              <MetricCard label="Chamados no Mês" value={resumo.abertos_mes} icon={<CalendarDays size={48} />} color="#1e293b" />
+              <MetricCard label="Fora do Prazo" value={resumo.fora_prazo} icon={<History size={48} />} color="#ef4444" />
+              <MetricCard label="Abertos Hoje" value={resumo.abertos_hoje} icon={<TrendingUp size={48} />} color="#C23C8E" />
+              <div className="flex flex-col gap-6">
+                <MetricCard className="flex-1" label="TMA 1ª Resp Hoje" value={resumo.media_primeira_resposta_dia} color="#2fabab" gaugeValue={resumo.media_primeira_resposta_dia_raw} gaugeMax={60} isUrgent={resumo.media_primeira_resposta_dia_raw > 60} />
+                <MetricCard className="flex-1" label="TMA 1ª Resp Mês" value={resumo.media_primeira_resposta_mes} color="#2fabab" gaugeValue={resumo.media_primeira_resposta_mes_raw} gaugeMax={60} isUrgent={resumo.media_primeira_resposta_mes_raw > 60} />
+              </div>
+              <div className="flex flex-col gap-6">
+                <MetricCard className="flex-1" label="TMA Solução Hoje" value={resumo.media_solucao_dia} color="#2fabab" gaugeValue={resumo.media_solucao_dia_raw} gaugeMax={240} isUrgent={resumo.media_solucao_dia_raw > 120} />
+                <MetricCard className="flex-1" label="TMA Solução Mês" value={resumo.media_solucao_mes} color="#2fabab" gaugeValue={resumo.media_solucao_mes_raw} gaugeMax={240} isUrgent={resumo.media_solucao_mes_raw > 120} />
+              </div>
             </div>
           </div>
-        </div>
-        <div className={`absolute inset-0 transition-transform duration-1000 ease-in-out grid grid-cols-4 gap-6 ${currentView === 1 ? 'translate-x-0' : 'translate-x-full'}`}>
-          {sortedAgentes.slice(0, 4).map((ag, idx) => <AgentShowcaseCard key={idx} agent={ag} rank={idx + 1} />)}
+
+          {/* VIEW 1: Agentes */}
+          <div className="min-w-full h-full p-1 overflow-y-auto">
+            <div className="grid grid-cols-4 gap-6 h-full">
+              {sortedAgentes.slice(0, 4).map((ag, idx) => <AgentShowcaseCard key={idx} agent={ag} rank={idx + 1} />)}
+            </div>
+          </div>
+
+          {/* VIEW 2: NPS */}
+          <div className="min-w-full h-full p-1 overflow-hidden flex flex-col gap-4">
+            <div className="grid grid-cols-5 gap-6 flex-1 min-h-0">
+              {/* Péssimo */}
+              <div className="col-span-1 rounded-3xl p-6 flex flex-col items-center justify-center text-white shadow-xl relative overflow-hidden group bg-slate-900">
+                <div className="absolute inset-0">
+                  <img src="https://i.postimg.cc/FszKCyQx/Gemini-Generated-Image-3s4vr53s4vr53s4v.png" alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <div className="absolute inset-0 bg-black/20" />
+                </div>
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                  {[...Array(60)].map((_, i) => (
+                    <div key={`snow-1-${i}`} className="absolute bg-white rounded-full opacity-60 animate-snow" style={{ left: `${Math.random() * 100}%`, top: `-${Math.random() * 20}%`, width: `${Math.random() * 3 + 1}px`, height: `${Math.random() * 3 + 1}px`, animationDuration: `${Math.random() * 5 + 3}s`, animationDelay: `${Math.random() * 2}s`, animationTimingFunction: 'linear', animationIterationCount: 'infinite' } as React.CSSProperties} />
+                  ))}
+                  <style>{`@keyframes snow { to { transform: translateY(400px); } } .animate-snow { animation-name: snow; }`}</style>
+                </div>
+                <div className="relative z-30 flex flex-col items-center mt-32">
+                  <span className="text-2xl font-black uppercase tracking-widest mb-4 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">Péssimo</span>
+                  <span className="text-8xl font-black drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">{npsStats.pessimo}</span>
+                  <div className="mt-6 text-2xl font-black bg-black/50 px-6 py-2 rounded-full backdrop-blur-md shadow-lg border border-white/20">{((npsStats.pessimo / npsStats.total || 0) * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+              {/* Ruim */}
+              <div className="col-span-1 rounded-3xl p-6 flex flex-col items-center justify-center text-white shadow-xl relative overflow-hidden group bg-slate-800">
+                <div className="absolute inset-0">
+                  <img src="https://i.postimg.cc/sXfzQzjH/Gemini-Generated-Image-wqm9lnwqm9lnwqm9.png" alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <div className="absolute inset-0 bg-black/30" />
+                </div>
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                  {[...Array(80)].map((_, i) => (
+                    <div key={`rain-${i}`} className="absolute bg-blue-200 opacity-50 animate-rain" style={{ left: `${Math.random() * 100}%`, top: `-${Math.random() * 20}%`, width: '1px', height: `${Math.random() * 15 + 20}px`, animationDuration: `${Math.random() * 0.4 + 0.3}s`, animationDelay: `${Math.random() * 2}s`, animationTimingFunction: 'linear', animationIterationCount: 'infinite' } as React.CSSProperties} />
+                  ))}
+                  <style>{`@keyframes rain { to { transform: translateY(600px); } } .animate-rain { animation-name: rain; }`}</style>
+                </div>
+                <div className="relative z-30 flex flex-col items-center mt-32">
+                  <span className="text-2xl font-black uppercase tracking-widest mb-4 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">Ruim</span>
+                  <span className="text-8xl font-black drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">{npsStats.ruim}</span>
+                  <div className="mt-6 text-2xl font-black bg-black/50 px-6 py-2 rounded-full backdrop-blur-md shadow-lg border border-white/20">{((npsStats.ruim / npsStats.total || 0) * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+              {/* Regular */}
+              <div className="col-span-1 rounded-3xl p-6 flex flex-col items-center justify-center text-white shadow-xl relative overflow-hidden group bg-yellow-900">
+                <div className="absolute inset-0">
+                  <img src="https://i.postimg.cc/j2zBZkSP/Gemini-Generated-Image-xrmixzxrmixzxrmi.png" alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <div className="absolute inset-0 bg-black/20" />
+                </div>
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                  {[...Array(20)].map((_, i) => (
+                    <div key={`wind-${i}`} className="absolute bg-white/20 rounded-full animate-wind" style={{ left: `-${Math.random() * 20}%`, top: `${Math.random() * 100}%`, width: `${Math.random() * 100 + 50}px`, height: `${Math.random() * 2 + 1}px`, animationDuration: `${Math.random() * 2 + 3}s`, animationDelay: `${Math.random() * 2}s`, animationTimingFunction: 'ease-in-out', animationIterationCount: 'infinite' } as React.CSSProperties} />
+                  ))}
+                  <style>{`@keyframes wind { to { transform: translateX(600px); } } .animate-wind { animation-name: wind; }`}</style>
+                </div>
+                <div className="relative z-30 flex flex-col items-center mt-32">
+                  <span className="text-2xl font-black uppercase tracking-widest mb-4 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] text-yellow-100">Regular</span>
+                  <span className="text-8xl font-black drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] text-white">{npsStats.regular}</span>
+                  <div className="mt-6 text-2xl font-black bg-black/50 text-white px-6 py-2 rounded-full backdrop-blur-md shadow-lg border border-white/20">{((npsStats.regular / npsStats.total || 0) * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+              {/* Bom */}
+              <div className="col-span-1 rounded-3xl p-6 flex flex-col items-center justify-center text-white shadow-xl relative overflow-hidden group bg-teal-800">
+                <div className="absolute inset-0">
+                  <img src="https://i.postimg.cc/V6sSY23q/Gemini-Generated-Image-m9eruvm9eruvm9er.png" alt="" className="w-full h-full object-cover scale-110 transition-transform duration-700 group-hover:scale-125" />
+                  <div className="absolute inset-0 bg-black/20" />
+                </div>
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                  {[...Array(15)].map((_, i) => (
+                    <div key={`float-${i}`} className="absolute bg-white/40 rounded-full animate-float" style={{ left: `${Math.random() * 100}%`, top: `${Math.random() * 100}%`, width: `${Math.random() * 4 + 2}px`, height: `${Math.random() * 4 + 2}px`, animationDuration: `${Math.random() * 5 + 5}s`, animationDelay: `${Math.random() * 5}s`, animationTimingFunction: 'ease-in-out', animationIterationCount: 'infinite' } as React.CSSProperties} />
+                  ))}
+                  <style>{`@keyframes float { 0%, 100% { transform: translate(0, 0); opacity: 0.2; } 50% { transform: translate(10px, -20px); opacity: 0.6; } } .animate-float { animation-name: float; }`}</style>
+                </div>
+                <div className="relative z-30 flex flex-col items-center mt-32">
+                  <span className="text-2xl font-black uppercase tracking-widest mb-4 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] text-teal-100">Bom</span>
+                  <span className="text-8xl font-black drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] text-white">{npsStats.bom}</span>
+                  <div className="mt-6 text-2xl font-black bg-black/50 text-white px-6 py-2 rounded-full backdrop-blur-md shadow-lg border border-white/20">{((npsStats.bom / npsStats.total || 0) * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+              {/* Ótimo */}
+              <div className="col-span-1 rounded-3xl p-6 flex flex-col items-center justify-center text-white shadow-xl relative overflow-hidden group bg-green-600">
+                <div className="absolute inset-0">
+                  <img src="https://i.postimg.cc/pdCT1qpP/Gemini-Generated-Image-9ej0189ej0189ej0.png" alt="" className="w-full h-full object-cover transition-transform duration-700 scale-110 group-hover:scale-125 -translate-y-12" />
+                  <div className="absolute inset-0 bg-black/10" />
+                </div>
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden mix-blend-overlay">
+                  <div className="absolute -top-[50%] -left-[50%] w-[200%] h-[200%] bg-[conic-gradient(from_0deg_at_50%_50%,transparent_0deg,rgba(255,223,186,0.4)_20deg,transparent_40deg,rgba(255,223,186,0.4)_60deg,transparent_80deg,rgba(255,223,186,0.4)_100deg,transparent_120deg)] opacity-50 animate-sun-spin" />
+                  <style>{`@keyframes sun-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } .animate-sun-spin { animation-name: sun-spin; animation-duration: 25s; animation-timing-function: linear; animation-iteration-count: infinite; }`}</style>
+                </div>
+                <div className="relative z-30 flex flex-col items-center mt-32">
+                  <span className="text-2xl font-black uppercase tracking-widest mb-4 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] text-green-50">Ótimo</span>
+                  <span className="text-8xl font-black drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] text-white">{npsStats.otimo}</span>
+                  <div className="mt-6 text-2xl font-black bg-black/50 text-white px-6 py-2 rounded-full backdrop-blur-md shadow-lg border border-white/20">{((npsStats.otimo / npsStats.total || 0) * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Cards inferiores NPS */}
+            <div className="grid grid-cols-3 gap-6 h-40 shrink-0">
+              <div className="bg-slate-900 rounded-3xl p-8 flex items-center justify-between text-white shadow-2xl relative overflow-hidden">
+                <div className="absolute left-0 bottom-0 top-0 w-2 bg-[#6366f1]" />
+                <div className="flex flex-col ml-6">
+                  <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Tickets Encerrados</span>
+                  <span className="text-6xl font-black">{npsStats.encerrados}</span>
+                </div>
+                <div className="pr-6 opacity-30 text-[#6366f1]"><History size={64} /></div>
+              </div>
+              <div className="bg-slate-900 rounded-3xl p-8 flex items-center justify-between text-white shadow-2xl relative overflow-hidden">
+                <div className="absolute left-0 bottom-0 top-0 w-2 bg-[#2fabab]" />
+                <div className="flex flex-col ml-6">
+                  <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Usuários que Responderam</span>
+                  <span className="text-6xl font-black">{npsStats.total}</span>
+                </div>
+                <div className="pr-6 opacity-30 text-[#2fabab]"><TrendingUp size={64} /></div>
+              </div>
+              <div className="bg-slate-900 rounded-3xl p-8 flex items-center justify-between text-white shadow-2xl relative overflow-hidden">
+                <div className="absolute left-0 bottom-0 top-0 w-2 bg-[#ef4444]" />
+                <div className="flex flex-col ml-6">
+                  <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Usuários S/ Resposta</span>
+                  <span className="text-6xl font-black text-red-400">{npsStats.encerrados - npsStats.total > 0 ? npsStats.encerrados - npsStats.total : 0}</span>
+                </div>
+                <div className="pr-6 opacity-30 text-[#ef4444]"><AlertCircle size={64} /></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
