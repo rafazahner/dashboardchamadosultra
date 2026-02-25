@@ -224,10 +224,10 @@ const Dashboard = () => {
       console.log(`[Notification Debug] Sucesso! Agente encontrado: ${config.id}`);
       setActiveNotification({ operator: config.displayName, avatar: config.avatar, score, ticketId });
 
-      // Toca o som de notificação (estilo vibrando)
+      // Toca o som de notificação (discreto)
       try {
-        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2407/2407-preview.mp3');
-        audio.volume = 0.6;
+        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2558/2558-preview.mp3');
+        audio.volume = 0.3;
         audio.play().catch(e => console.warn('[Audio Debug] Bloqueio de auto-play: O usuário precisa interagir com a página primeiro.', e));
       } catch (e) {
         console.error('[Audio Debug] Erro ao carregar/tocar som:', e);
