@@ -226,12 +226,18 @@ const Dashboard = () => {
 
       // Toca o som de notificação (Agora usando o arquivo local alerta.mp3)
       try {
-        const audio = new Audio('/alerta.mp3');
-        audio.volume = 0.7; // Aumentei um pouco o volume
-        audio.load();
-        audio.play().catch(e => console.warn('[Audio Debug] Para o som tocar, você precisa clicar na página uma vez após carregar.', e));
+        const audioPath = window.location.origin + '/alerta.mp3';
+        console.log(`[Audio Debug] Tentando tocar áudio de: ${audioPath}`);
+        const audio = new Audio(audioPath);
+        audio.volume = 1.0;
+        audio.play()
+          .then(() => console.log('[Audio Debug] Áudio iniciado com sucesso!'))
+          .catch(e => {
+            console.error('[Audio Debug] Erro ao tocar áudio:', e);
+            console.warn('[Audio Debug] DICA: Clique uma vez em qualquer lugar do dashboard para "desbloquear" o som.');
+          });
       } catch (e) {
-        console.error('[Audio Debug] Erro ao carregar arquivo local alerta.mp3:', e);
+        console.error('[Audio Debug] Erro na criação do objeto Audio:', e);
       }
 
       // Remove a notificação após 10 segundos
@@ -726,6 +732,13 @@ const Dashboard = () => {
     const rt = setInterval(fetchData, CONFIG.REFRESH_MS);
     const npsRt = setInterval(fetchNpsData, CONFIG.NPS_REFRESH_MS);
     const ct = setInterval(() => setCurrentTime(new Date()), 1000);
+
+    // Listener para "desbloquear" o áudio no primeiro clique (regra de segurança dos navegadores)
+    const unlockAudio = () => {
+      console.log('[Audio Debug] Interação detectada: Áudio desbloqueado!');
+      window.removeEventListener('click', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio);
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toUpperCase();
