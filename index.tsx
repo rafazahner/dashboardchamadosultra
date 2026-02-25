@@ -227,7 +227,8 @@ const Dashboard = () => {
       // Toca o som de notificação (Agora usando o arquivo local alerta.mp3)
       try {
         const audio = new Audio('/alerta.mp3');
-        audio.volume = 0.5;
+        audio.volume = 0.7; // Aumentei um pouco o volume
+        audio.load();
         audio.play().catch(e => console.warn('[Audio Debug] Para o som tocar, você precisa clicar na página uma vez após carregar.', e));
       } catch (e) {
         console.error('[Audio Debug] Erro ao carregar arquivo local alerta.mp3:', e);
