@@ -10,7 +10,8 @@ import {
   TrendingUp,
   XCircle,
   CalendarDays,
-  History
+  History,
+  Trophy
 } from 'lucide-react';
 
 /**
@@ -19,6 +20,7 @@ import {
 const CONFIG = {
   MOVIDESK_TOKEN: 'fb6ad8cd-1026-40b2-8224-f2a8dad2c97d',
   REFRESH_MS: 180000,
+  NPS_REFRESH_MS: 60000,
   AVATAR_OPACITY: 0.25,
   AVATAR_FALLBACK_OPACITY: 0.08
 };
@@ -196,7 +198,37 @@ const Dashboard = () => {
   const [carouselTimer, setCarouselTimer] = useState(20);
   const [dragOffset, setDragOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [activeNotification, setActiveNotification] = useState<{ operator: string, avatar: string, score?: number, ticketId?: string } | null>(null);
+  const lastProcessedTicketId = useRef<string | null>(null);
+  const lastNpsCount = useRef<number | null>(null);
   const touchStartX = useRef(0);
+
+  const triggerNotification = (operatorId: string, score?: number, ticketId?: string) => {
+    const op = operatorId?.trim().toLowerCase();
+    console.log(`[Notification Debug] Solicitado card para: "${operatorId}" (Score: ${score}, Ticket: ${ticketId})`);
+
+    // Busca o agente de forma mais flexível (checa se o nome contém ou é contido)
+    const config = AGENTES_CONFIG.find(c => {
+      if (!op) return false;
+      const cId = c.id.toLowerCase();
+      const cDisplay = c.displayName.toLowerCase();
+      const cFull = c.fullName?.toLowerCase();
+
+      return op === cId || op === cDisplay || op === cFull ||
+        (cFull && op.includes(cFull)) ||
+        op.includes(cId) ||
+        cId.includes(op);
+    });
+
+    if (config) {
+      console.log(`[Notification Debug] Sucesso! Agente encontrado: ${config.id}`);
+      setActiveNotification({ operator: config.displayName, avatar: config.avatar, score, ticketId });
+      // Remove a notificação após 10 segundos
+      setTimeout(() => setActiveNotification(null), 10000);
+    } else {
+      console.error(`[Notification Debug] FALHA: Nenhum agente em AGENTES_CONFIG corresponde a "${operatorId}"`);
+    }
+  };
 
   const fetchJson = async (url: string) => {
     try {
@@ -310,6 +342,86 @@ const Dashboard = () => {
   };
 
 
+  const fetchNpsData = async () => {
+    let countPessimo = 0;
+    let countRuim = 0;
+    let countRegular = 0;
+    let countBom = 0;
+    let countOtimo = 0;
+    const now = new Date();
+
+    try {
+      const gRes = await fetchJson(GOOGLE_SHEET_API);
+      if (gRes && gRes.data && Array.isArray(gRes.data)) {
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        const filteredData = gRes.data.filter((item: any) => {
+          if (!item.Data) return false;
+          const itemDate = new Date(item.Data);
+          return itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear;
+        });
+
+        filteredData.forEach((item: any) => {
+          const nota = Number(item.Nota);
+          if (nota === 1) countPessimo++;
+          else if (nota === 2) countRuim++;
+          else if (nota === 3) countRegular++;
+          else if (nota === 4) countBom++;
+          else if (nota === 5) countOtimo++;
+        });
+
+        if (filteredData.length > 0) {
+          const latestEntry = filteredData[filteredData.length - 1];
+          const latestTicketId = String(latestEntry.Ticket || latestEntry.TicketID || latestEntry.ID || latestEntry.Numero || latestEntry["Número do Chamado"] || '');
+          const operatorName = latestEntry.Operador || latestEntry.Atendente || latestEntry.Agente || '';
+          const score = latestEntry.Nota ? Number(latestEntry.Nota) : undefined;
+
+          console.log('[NPS Debug] Dados recebidos:', { latestTicketId, operatorName, score, total: filteredData.length });
+
+          const isNewTicket = latestTicketId !== lastProcessedTicketId.current;
+          const countIncreased = lastNpsCount.current !== null && filteredData.length > lastNpsCount.current;
+
+          if (lastProcessedTicketId.current === null) {
+            // Primeiro carregamento
+            lastProcessedTicketId.current = latestTicketId;
+            lastNpsCount.current = filteredData.length;
+
+            // Se for novo (menos de 5 min), mostra no load para não perder nada
+            const itemDate = new Date(latestEntry.Data);
+            if ((now.getTime() - itemDate.getTime()) / 60000 < 5 && operatorName) {
+              console.log('[NPS Debug] Detectado NPS fresquinho no carregamento inicial.');
+              triggerNotification(operatorName, score, latestTicketId);
+            }
+          } else if ((isNewTicket || countIncreased) && operatorName) {
+            console.log(`[NPS Debug] NOVO NPS DETECTADO!`);
+            triggerNotification(operatorName, score, latestTicketId);
+            lastProcessedTicketId.current = latestTicketId;
+            lastNpsCount.current = filteredData.length;
+          }
+        }
+
+        lastNpsCount.current = filteredData.length;
+
+        const totalSurveys = countPessimo + countRuim + countRegular + countBom + countOtimo;
+        const promoters = countOtimo;
+        const detractors = countPessimo + countRuim + countRegular;
+        const npsScore = totalSurveys > 0 ? ((promoters - detractors) / totalSurveys) * 100 : 0;
+
+        setNpsStats(prev => ({
+          ...prev,
+          pessimo: countPessimo,
+          ruim: countRuim,
+          regular: countRegular,
+          bom: countBom,
+          otimo: countOtimo,
+          total: totalSurveys,
+          nps: Math.round(npsScore)
+        }));
+      }
+    } catch (e) {
+      console.error('Erro Google API', e);
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -552,52 +664,8 @@ const Dashboard = () => {
       const tmaSolDiaNew = Math.round(tmaSolMinutosDiaNew * 10) / 10;
 
       // --- LOGICA NPS / SATISFAÇÃO ---
-      // --- FETCH GOOGLE SHEETS API (NPS FONTE ÚNICA) ---
-      let countPessimo = 0;
-      let countRuim = 0;
-      let countRegular = 0;
-      let countBom = 0;
-      let countOtimo = 0;
-
-      try {
-        const gRes = await fetchJson(GOOGLE_SHEET_API);
-        if (gRes && gRes.data && Array.isArray(gRes.data)) {
-          const currentMonth = now.getMonth();
-          const currentYear = now.getFullYear();
-          const filteredData = gRes.data.filter((item: any) => {
-            if (!item.Data) return false;
-            const itemDate = new Date(item.Data);
-            return itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear;
-          });
-          filteredData.forEach((item: any) => {
-            const nota = Number(item.Nota);
-            if (nota === 1) countPessimo++;
-            else if (nota === 2) countRuim++;
-            else if (nota === 3) countRegular++;
-            else if (nota === 4) countBom++;
-            else if (nota === 5) countOtimo++;
-          });
-          console.log(`[Google API] Total Mês Atual: ${filteredData.length}`);
-        }
-      } catch (e) {
-        console.error('Erro Google API', e);
-      }
-
-      const totalSurveys = countPessimo + countRuim + countRegular + countBom + countOtimo;
-      const promoters = countOtimo;
-      const detractors = countPessimo + countRuim + countRegular;
-      const npsScore = totalSurveys > 0 ? ((promoters - detractors) / totalSurveys) * 100 : 0;
-
-      setNpsStats({
-        pessimo: countPessimo,
-        ruim: countRuim,
-        regular: countRegular,
-        bom: countBom,
-        otimo: countOtimo,
-        total: totalSurveys,
-        nps: Math.round(npsScore),
-        encerrados: countMes
-      });
+      await fetchNpsData();
+      setNpsStats(prev => ({ ...prev, encerrados: countMes }));
 
       setResumo(prev => ({
         ...prev,
@@ -645,12 +713,30 @@ const Dashboard = () => {
 
     fetchData();
     const rt = setInterval(fetchData, CONFIG.REFRESH_MS);
+    const npsRt = setInterval(fetchNpsData, CONFIG.NPS_REFRESH_MS);
     const ct = setInterval(() => setCurrentTime(new Date()), 1000);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toUpperCase();
+      const numKey = parseInt(e.key);
+
+      if (key === 'A') {
+        console.log('[NPS Debug] Busca manual acionada (Tecla A)');
+        fetchNpsData();
+      } else if (!isNaN(numKey) && numKey >= 1 && numKey <= 5) {
+        // Dispara uma notificação de teste para o Enzo com a nota pressionada
+        triggerNotification('Enzo', numKey, '123456');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       clearInterval(timer);
       clearInterval(rt);
+      clearInterval(npsRt);
       clearInterval(ct);
+      window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
 
@@ -898,6 +984,113 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {activeNotification && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none p-4">
+          <div className={`relative bg-white/90 backdrop-blur-3xl border-4 rounded-[40px] p-12 flex flex-col items-center shadow-[0_32px_64px_rgba(0,0,0,0.4)] animate-nps-notification overflow-hidden max-w-2xl
+            ${activeNotification.score && activeNotification.score <= 2 ? 'border-red-500 scale-105' :
+              activeNotification.score && activeNotification.score >= 4 ? 'border-[#2fabab] animate-glow-positive' : 'border-slate-200'}`}
+          >
+            {/* Background Effects */}
+            {activeNotification.score && activeNotification.score >= 4 && (
+              <div className="absolute inset-0 z-0 pointer-events-none opacity-40">
+                {[...Array(20)].map((_, i) => (
+                  <div key={`star-${i}`} className="absolute text-yellow-500 animate-pulse"
+                    style={{ left: `${Math.random() * 100}%`, top: `${Math.random() * 100}%`, fontSize: `${Math.random() * 20 + 10}px` }}>★</div>
+                ))}
+              </div>
+            )}
+            {activeNotification.score && activeNotification.score <= 2 && (
+              <div className="absolute inset-0 z-0 pointer-events-none bg-red-500/10 animate-pulse" />
+            )}
+
+            <div className="relative mb-8 z-10">
+              <div className={`absolute inset-0 rounded-full animate-ping opacity-25 
+                ${activeNotification.score && activeNotification.score <= 2 ? 'bg-red-500' : 'bg-[#2fabab]'}`} />
+              <div className={`relative w-56 h-56 rounded-full border-4 overflow-hidden bg-slate-100 shadow-xl
+                ${activeNotification.score && activeNotification.score <= 2 ? 'border-red-500' : 'border-[#2fabab]'}`}>
+                <img src={activeNotification.avatar} alt="" className="w-full h-full object-cover" />
+              </div>
+
+              {/* Trophy Icon for high scores */}
+              {activeNotification.score && activeNotification.score >= 4 && (
+                <div className="absolute -top-6 -right-6 bg-yellow-400 p-4 rounded-full shadow-lg border-4 border-white animate-bounce z-20">
+                  <Trophy size={40} className="text-white" fill="white" />
+                </div>
+              )}
+
+              {/* Badge de Nota */}
+              {activeNotification.score && (
+                <div className={`absolute -bottom-4 right-0 w-20 h-20 rounded-full flex items-center justify-center text-4xl font-black text-white shadow-lg border-4 border-white
+                  ${activeNotification.score <= 2 ? 'bg-red-500' : activeNotification.score >= 4 ? 'bg-[#2fabab]' : 'bg-slate-400'}`}>
+                  {activeNotification.score}
+                </div>
+              )}
+            </div>
+
+            <div className="text-center z-10">
+              <div className="flex items-center justify-center gap-3 mb-3">
+                {activeNotification.score && activeNotification.score <= 2 && <AlertCircle className="text-red-500" size={32} />}
+                <h3 className={`text-2xl font-black uppercase tracking-[0.3em] 
+                  ${activeNotification.score && activeNotification.score <= 2 ? 'text-red-600' : 'text-slate-400'}`}>
+                  {activeNotification.score && activeNotification.score <= 2 ? '🚨 Atenção: Crítica Recebida' : 'Novo NPS Respondido!'}
+                </h3>
+              </div>
+              <p className="text-7xl font-black text-slate-900 uppercase tracking-tighter leading-none mb-4">
+                {activeNotification.operator}
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                {activeNotification.score && (
+                  <p className={`text-xl font-black uppercase tracking-widest px-8 py-2 rounded-full inline-block
+                    ${activeNotification.score <= 2 ? 'bg-red-100 text-red-600' : activeNotification.score >= 4 ? 'bg-teal-100 text-teal-600' : 'bg-slate-100 text-slate-600'}`}>
+                    Nota: {activeNotification.score === 1 ? 'Péssimo' : activeNotification.score === 2 ? 'Ruim' : activeNotification.score === 3 ? 'Regular' : activeNotification.score === 4 ? 'Bom' : 'Ótimo'}
+                  </p>
+                )}
+                {activeNotification.ticketId && (
+                  <p className="text-xl font-black bg-slate-900 text-white px-8 py-2 rounded-full uppercase tracking-widest">
+                    Ticket: #{activeNotification.ticketId}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className={`absolute -bottom-1 left-0 w-full h-3 animate-nps-bar
+              ${activeNotification.score && activeNotification.score <= 2 ? 'bg-red-500' : 'bg-[#2fabab]'}`} />
+          </div>
+          <style>{`
+            @keyframes nps-notification {
+              0% { transform: scale(0.5) translateY(100px); opacity: 0; }
+              5% { transform: scale(1.05) translateY(0); opacity: 1; }
+              8% { transform: scale(1) translateY(0); opacity: 1; }
+              92% { transform: scale(1) translateY(0); opacity: 1; }
+              100% { transform: scale(0.9) translateY(-100px); opacity: 0; }
+            }
+            @keyframes nps-bar {
+              from { width: 100%; }
+              to { width: 0%; }
+            }
+            @keyframes glow-positive {
+              0%, 100% { 
+                box-shadow: 0 0 20px rgba(47, 171, 171, 0.4), 0 0 40px rgba(255, 215, 0, 0.2), 0 32px 64px rgba(0,0,0,0.4); 
+                border-color: #2fabab; 
+              }
+              50% { 
+                box-shadow: 0 0 60px rgba(47, 171, 171, 0.8), 0 0 80px rgba(255, 215, 0, 0.4), 0 32px 64px rgba(0,0,0,0.4); 
+                border-color: #ffd700; 
+              }
+            }
+            .animate-nps-notification {
+              animation: nps-notification 10s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+            }
+            .animate-nps-bar {
+              animation: nps-bar 10s linear forwards;
+            }
+            .animate-glow-positive {
+              animation: glow-positive 1.5s ease-in-out infinite;
+            }
+          `}</style>
+        </div>
+      )}
     </div>
   );
 };
