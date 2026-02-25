@@ -224,13 +224,13 @@ const Dashboard = () => {
       console.log(`[Notification Debug] Sucesso! Agente encontrado: ${config.id}`);
       setActiveNotification({ operator: config.displayName, avatar: config.avatar, score, ticketId });
 
-      // Toca o som de notificação (discreto)
+      // Toca o som de notificação (Agora usando o arquivo local alerta.mp3)
       try {
-        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2558/2558-preview.mp3');
-        audio.volume = 0.3;
-        audio.play().catch(e => console.warn('[Audio Debug] Bloqueio de auto-play: O usuário precisa interagir com a página primeiro.', e));
+        const audio = new Audio('/alerta.mp3');
+        audio.volume = 0.5;
+        audio.play().catch(e => console.warn('[Audio Debug] Para o som tocar, você precisa clicar na página uma vez após carregar.', e));
       } catch (e) {
-        console.error('[Audio Debug] Erro ao carregar/tocar som:', e);
+        console.error('[Audio Debug] Erro ao carregar arquivo local alerta.mp3:', e);
       }
 
       // Remove a notificação após 10 segundos
